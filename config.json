@@ -1,5 +1,7 @@
 {
     "timer_duration_seconds": 30,
     "auto_show_answer": true,
-    "show_pause_indicator": true
+    "show_pause_indicator": true,
+    "auto_grade_ease": 3,
+    "auto_grade_grace_seconds": 1
 }

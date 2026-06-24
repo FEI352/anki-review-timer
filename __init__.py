@@ -21,6 +21,12 @@ config = mw.addonManager.getConfig(__name__)
 MAX_SECONDS = config.get("timer_duration_seconds", 30)
 AUTO_SHOW_ANSWER = config.get("auto_show_answer", True)
 SHOW_PAUSE_INDICATOR = config.get("show_pause_indicator", True)
+# When the timer expires, optionally grade the card automatically.
+# 1=Again, 2=Hard, 3=Good, 4=Easy. None / 0 = show answer only.
+AUTO_GRADE_EASE = config.get("auto_grade_ease") or None
+# Grace period (seconds) between auto-show-answer and auto-grade.
+# Lets the user see the answer for a moment before it's graded.
+AUTO_GRADE_GRACE = max(0, config.get("auto_grade_grace_seconds", 1))
 
 # Progress bar is rendered as a unicode block string. Width is in characters,
 # not pixels — keep it short to fit inside the timer card.
@@ -192,9 +198,46 @@ def update_timer() -> None:
         style_label(seconds_elapsed)
     if seconds_elapsed >= MAX_SECONDS:
         timer_obj.stop()
-        if AUTO_SHOW_ANSWER and mw.reviewer and mw.state == "review":
-            if not mw.reviewer.state == "answer":
-                mw.reviewer._showAnswer()
+        _handle_timeout()
+
+
+def _handle_timeout() -> None:
+    """Called when the countdown reaches zero.
+
+    By default just shows the answer. If `auto_grade_ease` is configured,
+    also grade the card after a short grace period.
+    """
+    if not (mw.reviewer and mw.state == "review"):
+        return
+    if mw.reviewer.state == "answer":
+        return  # answer already shown — nothing to do
+
+    if AUTO_SHOW_ANSWER:
+        mw.reviewer._showAnswer()
+
+    if AUTO_GRADE_EASE and AUTO_GRADE_EASE in (1, 2, 3, 4):
+        # Schedule the auto-grade after a grace period so the user gets
+        # a moment to see the answer. Stash the timer on the reviewer
+        # itself so we can cancel it if the user grades manually first.
+        grace_ms = AUTO_GRADE_GRACE * 1000
+        grader = QTimer(mw)
+        grader.setSingleShot(True)
+        grader.timeout.connect(
+            lambda e=AUTO_GRADE_EASE: _do_auto_grade(e, grader)
+        )
+        grader.start(grace_ms)
+        # remember so on_show_answer / manual grade can cancel
+        mw.reviewer._reviewTimerAutoGrader = grader
+
+
+def _do_auto_grade(ease: int, grader: "QTimer") -> None:
+    """Fire the auto-grade if the card is still waiting on one."""
+    try:
+        if mw.reviewer and mw.state == "review" \
+                and mw.reviewer.state == "answer":
+            mw.reviewer._answerCard(ease)
+    finally:
+        grader.deleteLater()
 
 
 def _build_widgets() -> None:
@@ -258,13 +301,33 @@ def on_show_question(card) -> None:
 
 
 def on_show_answer(card) -> None:
+    # Stop the countdown when the answer becomes visible — from here on,
+    # the user is reviewing the answer and we don't want the urgency
+    # signal. If auto_grade is configured, _handle_timeout will still
+    # grade the card after the configured grace period.
     if timer_obj:
         timer_obj.stop()
+
+
+def _cancel_pending_auto_grade() -> None:
+    """Cancel a scheduled auto-grade (called when the user grades manually)."""
+    grader = getattr(mw.reviewer, "_reviewTimerAutoGrader", None)
+    if grader is not None:
+        try:
+            grader.stop()
+        except Exception:
+            pass
+        try:
+            grader.deleteLater()
+        except Exception:
+            pass
+        mw.reviewer._reviewTimerAutoGrader = None
 
 
 def on_reviewer_end() -> None:
     if timer_obj:
         timer_obj.stop()
+    _cancel_pending_auto_grade()
     if timer_container:
         timer_container.hide()
 
@@ -275,8 +338,14 @@ def on_theme_change() -> None:
         style_label(seconds_elapsed)
 
 
+def on_reviewer_did_answer(reviewer, card, ease) -> None:
+    """Cancel any pending auto-grade — the user graded manually."""
+    _cancel_pending_auto_grade()
+
+
 gui_hooks.reviewer_did_show_question.append(on_show_question)
 gui_hooks.reviewer_did_show_answer.append(on_show_answer)
 gui_hooks.reviewer_will_end.append(on_reviewer_end)
 gui_hooks.theme_did_change.append(on_theme_change)
+gui_hooks.reviewer_did_answer_card.append(on_reviewer_did_answer)
 
