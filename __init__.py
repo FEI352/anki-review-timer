@@ -204,21 +204,27 @@ def update_timer() -> None:
 def _handle_timeout() -> None:
     """Called when the countdown reaches zero.
 
-    By default just shows the answer. If `auto_grade_ease` is configured,
-    also grade the card after a short grace period.
+    Two cases:
+      1) Front of card still showing  → reveal the answer, then schedule
+         an auto-grade after AUTO_GRADE_GRACE seconds.
+      2) Answer already showing (user pressed space, or we are
+         running past MAX_SECONDS while the user reads) → skip the
+         _showAnswer call and just schedule the auto-grade. The
+         auto-grade fires regardless of how we got to the answer
+         state, so the timer always self-resolves.
     """
     if not (mw.reviewer and mw.state == "review"):
         return
-    if mw.reviewer.state == "answer":
-        return  # answer already shown — nothing to do
 
-    if AUTO_SHOW_ANSWER:
+    answer_already_visible = mw.reviewer.state == "answer"
+
+    if not answer_already_visible and AUTO_SHOW_ANSWER:
         mw.reviewer._showAnswer()
+        # Re-read the state — _showAnswer flips it to "answer" synchronously.
+        answer_already_visible = mw.reviewer.state == "answer"
 
-    if AUTO_GRADE_EASE and AUTO_GRADE_EASE in (1, 2, 3, 4):
-        # Schedule the auto-grade after a grace period so the user gets
-        # a moment to see the answer. Stash the timer on the reviewer
-        # itself so we can cancel it if the user grades manually first.
+    if AUTO_GRADE_EASE and AUTO_GRADE_EASE in (1, 2, 3, 4) \
+            and answer_already_visible:
         grace_ms = AUTO_GRADE_GRACE * 1000
         grader = QTimer(mw)
         grader.setSingleShot(True)
@@ -226,7 +232,6 @@ def _handle_timeout() -> None:
             lambda e=AUTO_GRADE_EASE: _do_auto_grade(e, grader)
         )
         grader.start(grace_ms)
-        # remember so on_show_answer / manual grade can cancel
         mw.reviewer._reviewTimerAutoGrader = grader
 
 
@@ -301,12 +306,16 @@ def on_show_question(card) -> None:
 
 
 def on_show_answer(card) -> None:
-    # Stop the countdown when the answer becomes visible — from here on,
-    # the user is reviewing the answer and we don't want the urgency
-    # signal. If auto_grade is configured, _handle_timeout will still
-    # grade the card after the configured grace period.
-    if timer_obj:
-        timer_obj.stop()
+    # Do NOT stop the main countdown. The whole point of the timer is to
+    # keep ticking until either:
+    #   (a) the user grades the card manually (which cancels the
+    #       pending auto-grade via reviewer_did_answer_card), or
+    #   (b) the countdown reaches MAX_SECONDS, at which point
+    #       _handle_timeout fires _answerCard(ease) — this is the
+    #       auto-pass / auto-fail behavior.
+    # If we stopped the timer here, the user could read the answer
+    # forever and the auto-grade would never fire.
+    pass
 
 
 def _cancel_pending_auto_grade() -> None:
