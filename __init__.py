@@ -9,7 +9,7 @@ from aqt import mw, gui_hooks
 from aqt.qt import QTimer, QLabel, Qt, QFont, QVBoxLayout, QFrame, QObject, QEvent
 from aqt import theme, colors
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 
 timer_container = None
 timer_label = None
@@ -28,12 +28,15 @@ AUTO_SHOW_ANSWER = True
 SHOW_PAUSE_INDICATOR = True
 AUTO_GRADE_EASE = 1
 AUTO_GRADE_GRACE = 30
+FRONT_COLOR_PREF = ""
+BACK_COLOR_PREF = "green"
 
 
 def _load_config() -> None:
     """Load and sanitize add-on configuration."""
     global MAX_SECONDS, AUTO_SHOW_ANSWER, SHOW_PAUSE_INDICATOR
     global AUTO_GRADE_EASE, AUTO_GRADE_GRACE
+    global FRONT_COLOR_PREF, BACK_COLOR_PREF
 
     config = mw.addonManager.getConfig(__name__) or {}
     try:
@@ -56,6 +59,9 @@ def _load_config() -> None:
     except (TypeError, ValueError):
         AUTO_GRADE_GRACE = 30
 
+    FRONT_COLOR_PREF = str(config.get("front_color", "")).strip().lower()
+    BACK_COLOR_PREF = str(config.get("back_color", "green")).strip().lower()
+
 
 _load_config()
 
@@ -68,11 +74,41 @@ EMPTY_CHAR = "\u2581"    # ▁ lower one eighth block (gives the bar a soft
                          #                                  baseline look)
 
 
-# --- theme helpers ----------------------------------------------------------
+# --- theme & color helpers --------------------------------------------------
 
 def _tm():
     """Return the active Anki ThemeManager singleton."""
     return theme.theme_manager
+
+
+# Semantic / custom palette presets
+PALETTES = {
+    "green": {
+        "text": colors.STATE_REVIEW,     # green (#16a34a / #22c55e)
+        "fill": colors.STATE_REVIEW,
+        "track": colors.FLAG_3,          # lighter pastel green (#4ade80 / #86efac)
+    },
+    "yellow": {
+        "text": colors.STATE_BURIED,     # warm amber / yellow (#f59e0b / #92400e)
+        "fill": colors.STATE_BURIED,
+        "track": colors.STATE_SUSPENDED, # light yellow (#facc15 / #fef9c3)
+    },
+    "orange": {
+        "text": colors.FLAG_2,           # orange (#fb923c / #fdba74)
+        "fill": colors.FLAG_2,
+        "track": colors.FLAG_2,
+    },
+    "purple": {
+        "text": colors.FLAG_7,           # purple (#a855f7 / #c084fc)
+        "fill": colors.FLAG_7,
+        "track": colors.FLAG_7,
+    },
+    "blue": {
+        "text": colors.BORDER_FOCUS,     # blue (#3b82f6)
+        "fill": colors.BORDER_FOCUS,
+        "track": colors.ACCENT_CARD,
+    },
+}
 
 
 def _phase_total_seconds() -> int:
@@ -104,13 +140,30 @@ def _state_for_phase() -> str:
     return "urgent"
 
 
+def _resolve_color(spec: str | dict) -> str:
+    """Resolve an Anki token dict or raw hex/rgb string into CSS color."""
+    if isinstance(spec, dict):
+        return _tm().var(spec)
+    return str(spec)
+
+
 def _fg_for_phase() -> str:
-    """Foreground color (text) for the current state, theme-aware."""
+    """Foreground color (text) for the current state and phase."""
     state = _state_for_phase()
     if state == "paused":
         return _tm().var(colors.FG_DISABLED)
     if state == "expired":
         return _tm().var(colors.FG_FAINT)
+
+    # Check phase color preference
+    pref = BACK_COLOR_PREF if current_phase == "answer" else FRONT_COLOR_PREF
+    if pref:
+        if pref in PALETTES:
+            return _resolve_color(PALETTES[pref]["text"])
+        # Custom hex or CSS color name
+        return pref
+
+    # Default front dynamic palette: Normal FG -> Learn Orange -> Danger Red
     if state == "idle":
         return _tm().var(colors.FG)
     if state == "mid":
@@ -123,6 +176,13 @@ def _track_color() -> str:
     state = _state_for_phase()
     if state in ("paused", "expired"):
         return _tm().var(colors.BORDER_SUBTLE)
+
+    pref = BACK_COLOR_PREF if current_phase == "answer" else FRONT_COLOR_PREF
+    if pref:
+        if pref in PALETTES:
+            return _resolve_color(PALETTES[pref]["track"])
+        return _tm().var(colors.BORDER_SUBTLE)
+
     if state == "idle":
         return _tm().var(colors.FG_FAINT)
     if state == "mid":
@@ -135,6 +195,13 @@ def _fill_color() -> str:
     state = _state_for_phase()
     if state in ("paused", "expired"):
         return _tm().var(colors.FG_FAINT)
+
+    pref = BACK_COLOR_PREF if current_phase == "answer" else FRONT_COLOR_PREF
+    if pref:
+        if pref in PALETTES:
+            return _resolve_color(PALETTES[pref]["fill"])
+        return pref
+
     if state == "idle":
         return _tm().var(colors.BORDER_FOCUS)
     if state == "mid":
@@ -266,12 +333,7 @@ def _on_question_timeout() -> None:
     # Automatically reveal the answer if configured
     if AUTO_SHOW_ANSWER and mw.reviewer.state != "answer":
         mw.reviewer._showAnswer()
-        # Note: mw.reviewer._showAnswer() will synchronously trigger
-        # the hook reviewer_did_show_answer -> on_show_answer,
-        # which cleanly initiates the answer phase!
     else:
-        # If auto-show-answer is disabled or answer is already shown,
-        # transition to answer phase directly if auto-grade is configured.
         if AUTO_GRADE_EASE and AUTO_GRADE_EASE in (1, 2, 3, 4):
             _start_answer_phase()
         else:
@@ -390,7 +452,6 @@ def on_show_question(card) -> None:
 
 def on_show_answer(card) -> None:
     """Hook: card back (answer) is shown, whether manually (space) or via auto-show-answer."""
-    # When the answer appears, start the independent answer-phase grace countdown!
     _start_answer_phase()
 
 

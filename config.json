@@ -3,5 +3,7 @@
     "auto_show_answer": true,
     "show_pause_indicator": true,
     "auto_grade_ease": 1,
-    "auto_grade_grace_seconds": 30
+    "auto_grade_grace_seconds": 30,
+    "front_color": "",
+    "back_color": "green"
 }

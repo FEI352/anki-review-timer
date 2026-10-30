@@ -67,7 +67,9 @@ See [`config.md`](config.md) for full parameter details. The default settings in
     "auto_show_answer": true,
     "show_pause_indicator": true,
     "auto_grade_ease": 1,
-    "auto_grade_grace_seconds": 30
+    "auto_grade_grace_seconds": 30,
+    "front_color": "",
+    "back_color": "green"
 }
 ```
 
@@ -76,6 +78,8 @@ See [`config.md`](config.md) for full parameter details. The default settings in
 - **`show_pause_indicator`** (default `true`): Displays the `⏸` icon prefix when the timer is paused.
 - **`auto_grade_ease`** (default `1`): Grade applied upon expiration. `0` = off (only reveals answer), `1` = Again (fail, default), `2` = Hard, `3` = Good (pass), `4` = Easy.
 - **`auto_grade_grace_seconds`** (default `30`): Reading grace period (in seconds) between answer revelation and the automatic rating firing.
+- **`front_color`** (default `""`): Color scheme for the front question phase. `""` uses Anki's dynamic semantic tokens (`FG` -> `STATE_LEARN` -> `ACCENT_DANGER`), or choose from presets (`"blue"`, `"green"`, `"yellow"`, `"orange"`, `"purple"`) or custom hex strings (e.g. `"#3b82f6"`).
+- **`back_color`** (default `"green"`): Color scheme for the back answer phase. Distinguishes answer review from question thinking (`"green"` / `"yellow"` / `"orange"` / `"purple"` / `"blue"`, or custom `#RRGGBB` hex string).
 
 ## Credits
 
