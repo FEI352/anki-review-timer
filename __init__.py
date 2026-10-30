@@ -9,6 +9,8 @@ from aqt import mw, gui_hooks
 from aqt.qt import QTimer, QLabel, Qt, QFont, QVBoxLayout, QFrame, QObject, QEvent
 from aqt import theme, colors
 
+__version__ = "1.2.1"
+
 timer_container = None
 timer_label = None
 progress_label = None
@@ -436,4 +438,13 @@ gui_hooks.reviewer_did_show_answer.append(on_show_answer)
 gui_hooks.reviewer_will_end.append(on_reviewer_end)
 gui_hooks.theme_did_change.append(on_theme_change)
 gui_hooks.reviewer_did_answer_card.append(on_reviewer_did_answer)
-gui_hooks.addon_config_did_change.append(on_addon_config_did_change)
+
+# Register addon_config_did_change only if supported by the running Anki version
+if hasattr(gui_hooks, "addon_config_did_change"):
+    gui_hooks.addon_config_did_change.append(on_addon_config_did_change)
+elif hasattr(mw.addonManager, "addon_config_did_change"):
+    try:
+        mw.addonManager.addon_config_did_change.append(on_addon_config_did_change)
+    except Exception:
+        pass
+

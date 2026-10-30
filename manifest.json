@@ -1,5 +1,6 @@
 {
     "package": "anki-review-timer",
     "name": "Review Timer",
+    "version": "1.2.1",
     "homepage": "https://github.com/FEI352/anki-review-timer"
 }
