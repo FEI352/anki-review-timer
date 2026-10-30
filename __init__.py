@@ -9,7 +9,7 @@ from aqt import mw, gui_hooks
 from aqt.qt import QTimer, QLabel, Qt, QFont, QVBoxLayout, QFrame, QObject, QEvent
 from aqt import theme, colors
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 timer_container = None
 timer_label = None
@@ -455,17 +455,30 @@ def on_show_answer(card) -> None:
     _start_answer_phase()
 
 
-def on_reviewer_end() -> None:
-    """Hook: reviewer exits (deck finished or user exited)."""
+def _hide_timer() -> None:
+    """Safely stop and hide the timer widget outside reviewer."""
+    global paused
     if timer_obj:
         timer_obj.stop()
+    paused = False
     if timer_container:
         timer_container.hide()
 
 
+def on_reviewer_end() -> None:
+    """Hook: reviewer exits (deck finished or user exited)."""
+    _hide_timer()
+
+
+def on_state_did_change(new_state: str, old_state: str) -> None:
+    """Hook: main window state changed (e.g. review -> deckBrowser / overview)."""
+    if new_state != "review":
+        _hide_timer()
+
+
 def on_theme_change() -> None:
     """Hook: Anki day/night theme changed."""
-    if timer_container and timer_container.isVisible():
+    if mw.state == "review" and timer_container and timer_container.isVisible():
         style_label()
 
 
@@ -479,13 +492,14 @@ def on_addon_config_did_change(module: str, conf: dict) -> None:
     """Hook: add-on config changed."""
     if module == __name__:
         _load_config()
-        if timer_container and timer_container.isVisible():
+        if mw.state == "review" and timer_container and timer_container.isVisible():
             style_label()
 
 
 gui_hooks.reviewer_did_show_question.append(on_show_question)
 gui_hooks.reviewer_did_show_answer.append(on_show_answer)
 gui_hooks.reviewer_will_end.append(on_reviewer_end)
+gui_hooks.state_did_change.append(on_state_did_change)
 gui_hooks.theme_did_change.append(on_theme_change)
 gui_hooks.reviewer_did_answer_card.append(on_reviewer_did_answer)
 
