@@ -17,6 +17,10 @@ seconds_elapsed = 0
 paused = False
 _resize_filter = None
 
+# Grace period countdown state
+grace_seconds_elapsed = 0
+is_in_grace = False
+
 # Config variables (loaded via _load_config)
 MAX_SECONDS = 30
 AUTO_SHOW_ANSWER = True
@@ -70,14 +74,30 @@ def _tm():
     return theme.theme_manager
 
 
-def _state_for_seconds(secs: int) -> str:
+def _effective_total_seconds() -> int:
+    """Total seconds for the currently active countdown phase."""
+    if is_in_grace:
+        return AUTO_GRADE_GRACE
+    return MAX_SECONDS
+
+
+def _effective_elapsed_seconds() -> int:
+    """Elapsed seconds for the currently active countdown phase."""
+    if is_in_grace:
+        return grace_seconds_elapsed
+    return seconds_elapsed
+
+
+def _state_for_seconds() -> str:
     """Return one of: 'idle', 'mid', 'urgent', 'expired', 'paused'."""
     if paused:
         return "paused"
-    remaining = MAX_SECONDS - secs
+    total = _effective_total_seconds()
+    elapsed = _effective_elapsed_seconds()
+    remaining = total - elapsed
     if remaining <= 0:
         return "expired"
-    ratio = remaining / MAX_SECONDS if MAX_SECONDS > 0 else 0
+    ratio = remaining / total if total > 0 else 0
     if ratio > 0.5:
         return "idle"
     if ratio > 0.25:
@@ -85,9 +105,9 @@ def _state_for_seconds(secs: int) -> str:
     return "urgent"
 
 
-def _fg_for_seconds(secs: int) -> str:
+def _fg_for_seconds() -> str:
     """Foreground color (text) for the current state, theme-aware."""
-    state = _state_for_seconds(secs)
+    state = _state_for_seconds()
     if state == "paused":
         return _tm().var(colors.FG_DISABLED)
     if state == "expired":
@@ -99,9 +119,9 @@ def _fg_for_seconds(secs: int) -> str:
     return _tm().var(colors.ACCENT_DANGER)
 
 
-def _track_color(secs: int) -> str:
+def _track_color() -> str:
     """Color of the empty (track) part of the progress bar."""
-    state = _state_for_seconds(secs)
+    state = _state_for_seconds()
     if state in ("paused", "expired"):
         return _tm().var(colors.BORDER_SUBTLE)
     if state == "idle":
@@ -111,9 +131,9 @@ def _track_color(secs: int) -> str:
     return _tm().var(colors.ACCENT_DANGER)
 
 
-def _fill_color(secs: int) -> str:
+def _fill_color() -> str:
     """Color of the filled part of the progress bar."""
-    state = _state_for_seconds(secs)
+    state = _state_for_seconds()
     if state in ("paused", "expired"):
         return _tm().var(colors.FG_FAINT)
     if state == "idle":
@@ -123,15 +143,15 @@ def _fill_color(secs: int) -> str:
     return _tm().var(colors.ACCENT_DANGER)
 
 
-def _font_size_for_seconds(secs: int) -> int:
+def _font_size_for_seconds() -> int:
     """Bump font size in urgent state for added visual emphasis."""
-    return 16 if _state_for_seconds(secs) == "urgent" else 15
+    return 16 if _state_for_seconds() == "urgent" else 15
 
 
-def format_time(secs: int) -> str:
-    remaining = MAX_SECONDS - secs
-    if remaining < 0:
-        remaining = 0
+def format_time() -> str:
+    total = _effective_total_seconds()
+    elapsed = _effective_elapsed_seconds()
+    remaining = max(0, total - elapsed)
     m, s = divmod(remaining, 60)
     return f"{m}:{s:02d}"
 
@@ -143,9 +163,9 @@ def _apply_stylesheet() -> None:
     if timer_container is None:
         return
     tm = _tm()
-    text_color = _fg_for_seconds(seconds_elapsed)
-    track_color = _track_color(seconds_elapsed)
-    font_size = _font_size_for_seconds(seconds_elapsed)
+    text_color = _fg_for_seconds()
+    track_color = _track_color()
+    font_size = _font_size_for_seconds()
 
     timer_container.setStyleSheet(
         f"""
@@ -177,19 +197,21 @@ def _apply_stylesheet() -> None:
     )
 
 
-def style_label(secs: int) -> None:
+def style_label() -> None:
     """Update text, color and progress to match current state."""
     if timer_label is None or progress_label is None:
         return
     prefix = "⏸  " if paused and SHOW_PAUSE_INDICATOR else ""
-    timer_label.setText(prefix + format_time(secs))
+    timer_label.setText(prefix + format_time())
 
     # Two-tone progress bar via inline HTML spans (theme-aware).
-    remaining = max(0, MAX_SECONDS - secs)
-    ratio = remaining / MAX_SECONDS if MAX_SECONDS > 0 else 0
+    total = _effective_total_seconds()
+    elapsed = _effective_elapsed_seconds()
+    remaining = max(0, total - elapsed)
+    ratio = remaining / total if total > 0 else 0
     filled_n = round(PROGRESS_BAR_WIDTH * ratio)
-    fill_color = _fill_color(secs)
-    track_color = _track_color(secs)
+    fill_color = _fill_color()
+    track_color = _track_color()
     progress_label.setText(
         f"<span style='color:{fill_color}'>"
         f"{FILLED_CHAR * filled_n}</span>"
@@ -216,37 +238,43 @@ class ReviewerResizeFilter(QObject):
 
 def toggle_pause() -> None:
     global paused
-    if seconds_elapsed >= MAX_SECONDS:
+    total = _effective_total_seconds()
+    elapsed = _effective_elapsed_seconds()
+    if elapsed >= total:
         return
     paused = not paused
     if paused:
         timer_obj.stop()
     else:
         timer_obj.start(1000)
-    style_label(seconds_elapsed)
+    style_label()
 
 
 def update_timer() -> None:
-    global seconds_elapsed
-    seconds_elapsed += 1
-    if timer_container:
-        style_label(seconds_elapsed)
-    if seconds_elapsed >= MAX_SECONDS:
-        timer_obj.stop()
-        _handle_timeout()
+    global seconds_elapsed, grace_seconds_elapsed
+    if is_in_grace:
+        grace_seconds_elapsed += 1
+        if timer_container:
+            style_label()
+        if grace_seconds_elapsed >= AUTO_GRADE_GRACE:
+            timer_obj.stop()
+            _do_auto_grade(AUTO_GRADE_EASE)
+    else:
+        seconds_elapsed += 1
+        if timer_container:
+            style_label()
+        if seconds_elapsed >= MAX_SECONDS:
+            _handle_timeout()
 
 
 def _handle_timeout() -> None:
-    """Called when the countdown reaches zero.
+    """Called when the front countdown reaches zero.
 
     Two cases:
-      1) Front of card still showing  → reveal the answer, then schedule
-         an auto-grade after AUTO_GRADE_GRACE seconds.
-      2) Answer already showing (user pressed space, or we are
-         running past MAX_SECONDS while the user reads) → skip the
-         _showAnswer call and just schedule the auto-grade. The
-         auto-grade fires regardless of how we got to the answer
-         state, so the timer always self-resolves.
+      1) Front of card still showing  → reveal the answer, then start
+         grace period countdown until auto-grade.
+      2) Answer already showing (user pressed space before timeout)
+         → transition directly to grace countdown.
     """
     if not (mw.reviewer and mw.state == "review"):
         return
@@ -255,37 +283,40 @@ def _handle_timeout() -> None:
 
     if not answer_already_visible and AUTO_SHOW_ANSWER:
         mw.reviewer._showAnswer()
-        # Re-read the state — _showAnswer flips it to "answer" synchronously.
         answer_already_visible = mw.reviewer.state == "answer"
 
     if AUTO_GRADE_EASE and AUTO_GRADE_EASE in (1, 2, 3, 4) \
             and answer_already_visible:
-        # Cancel any previous grader before scheduling a new one
-        _cancel_pending_auto_grade()
-
-        grace_ms = AUTO_GRADE_GRACE * 1000
-        grader = QTimer(mw)
-        grader.setSingleShot(True)
-        grader.timeout.connect(
-            lambda e=AUTO_GRADE_EASE: _do_auto_grade(e, grader)
-        )
-        grader.start(grace_ms)
-        mw.reviewer._reviewTimerAutoGrader = grader
+        _start_grace_countdown()
+    else:
+        timer_obj.stop()
 
 
-def _do_auto_grade(ease: int, grader: "QTimer") -> None:
+def _start_grace_countdown() -> None:
+    """Start the grace countdown on the answer side."""
+    global is_in_grace, grace_seconds_elapsed
+    if AUTO_GRADE_GRACE <= 0:
+        timer_obj.stop()
+        _do_auto_grade(AUTO_GRADE_EASE)
+        return
+
+    is_in_grace = True
+    grace_seconds_elapsed = 0
+    style_label()
+    if timer_obj:
+        timer_obj.start(1000)
+
+
+def _do_auto_grade(ease: int) -> None:
     """Fire the auto-grade if the card is still waiting on one."""
+    global is_in_grace
+    is_in_grace = False
     try:
         if mw.reviewer and mw.state == "review" \
                 and mw.reviewer.state == "answer":
             mw.reviewer._answerCard(ease)
-    finally:
-        try:
-            grader.deleteLater()
-        except Exception:
-            pass
-        if getattr(mw.reviewer, "_reviewTimerAutoGrader", None) is grader:
-            mw.reviewer._reviewTimerAutoGrader = None
+    except Exception:
+        pass
 
 
 def _build_widgets() -> None:
@@ -344,18 +375,17 @@ def _position_widget() -> None:
 
 
 def on_show_question(card) -> None:
-    global seconds_elapsed, timer_obj, paused
-
-    # Clean up any leftover auto-grader from the previous card
-    _cancel_pending_auto_grade()
+    global seconds_elapsed, grace_seconds_elapsed, is_in_grace, timer_obj, paused
 
     seconds_elapsed = 0
+    grace_seconds_elapsed = 0
+    is_in_grace = False
     paused = False
 
     if timer_container is None:
         _build_widgets()
 
-    style_label(0)
+    style_label()
     _position_widget()
 
     if timer_obj is None:
@@ -365,37 +395,16 @@ def on_show_question(card) -> None:
 
 
 def on_show_answer(card) -> None:
-    # Do NOT stop the main countdown. The whole point of the timer is to
-    # keep ticking until either:
-    #   (a) the user grades the card manually (which cancels the
-    #       pending auto-grade via reviewer_did_answer_card), or
-    #   (b) the countdown reaches MAX_SECONDS, at which point
-    #       _handle_timeout fires _answerCard(ease) — this is the
-    #       auto-pass / auto-fail behavior.
-    # If we stopped the timer here, the user could read the answer
-    # forever and the auto-grade would never fire.
+    # If the user pressed space or flipped to answer manually while countdown is running,
+    # the main timer keeps ticking until MAX_SECONDS. If it already expired, grace was started.
     pass
 
 
-def _cancel_pending_auto_grade() -> None:
-    """Cancel a scheduled auto-grade (called when the user grades manually or reviews ends)."""
-    grader = getattr(mw.reviewer, "_reviewTimerAutoGrader", None)
-    if grader is not None:
-        try:
-            grader.stop()
-        except Exception:
-            pass
-        try:
-            grader.deleteLater()
-        except Exception:
-            pass
-        mw.reviewer._reviewTimerAutoGrader = None
-
-
 def on_reviewer_end() -> None:
+    global is_in_grace
+    is_in_grace = False
     if timer_obj:
         timer_obj.stop()
-    _cancel_pending_auto_grade()
     if timer_container:
         timer_container.hide()
 
@@ -403,12 +412,15 @@ def on_reviewer_end() -> None:
 def on_theme_change() -> None:
     """Re-apply stylesheet when Anki's day/night theme changes."""
     if timer_container and timer_container.isVisible():
-        style_label(seconds_elapsed)
+        style_label()
 
 
 def on_reviewer_did_answer(reviewer, card, ease) -> None:
-    """Cancel any pending auto-grade — the user graded manually."""
-    _cancel_pending_auto_grade()
+    """Cancel countdown when the user grades manually."""
+    global is_in_grace
+    is_in_grace = False
+    if timer_obj:
+        timer_obj.stop()
 
 
 def on_addon_config_did_change(module: str, conf: dict) -> None:
@@ -416,7 +428,7 @@ def on_addon_config_did_change(module: str, conf: dict) -> None:
     if module == __name__:
         _load_config()
         if timer_container and timer_container.isVisible():
-            style_label(seconds_elapsed)
+            style_label()
 
 
 gui_hooks.reviewer_did_show_question.append(on_show_question)
