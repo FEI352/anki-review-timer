@@ -6,7 +6,7 @@ https://github.com/josh-freeman/anki-review-timer
 """
 
 from aqt import mw, gui_hooks
-from aqt.qt import QTimer, QLabel, Qt, QFont, QVBoxLayout, QFrame
+from aqt.qt import QTimer, QLabel, Qt, QFont, QVBoxLayout, QFrame, QObject, QEvent
 from aqt import theme, colors
 
 timer_container = None
@@ -15,18 +15,45 @@ progress_label = None
 timer_obj = None
 seconds_elapsed = 0
 paused = False
+_resize_filter = None
 
-# Load config
-config = mw.addonManager.getConfig(__name__)
-MAX_SECONDS = config.get("timer_duration_seconds", 30)
-AUTO_SHOW_ANSWER = config.get("auto_show_answer", True)
-SHOW_PAUSE_INDICATOR = config.get("show_pause_indicator", True)
-# When the timer expires, optionally grade the card automatically.
-# 1=Again, 2=Hard, 3=Good, 4=Easy. None / 0 = show answer only.
-AUTO_GRADE_EASE = config.get("auto_grade_ease") or None
-# Grace period (seconds) between auto-show-answer and auto-grade.
-# Lets the user see the answer for a moment before it's graded.
-AUTO_GRADE_GRACE = max(0, config.get("auto_grade_grace_seconds", 1))
+# Config variables (loaded via _load_config)
+MAX_SECONDS = 30
+AUTO_SHOW_ANSWER = True
+SHOW_PAUSE_INDICATOR = True
+AUTO_GRADE_EASE = 3
+AUTO_GRADE_GRACE = 30
+
+
+def _load_config() -> None:
+    """Load and sanitize add-on configuration."""
+    global MAX_SECONDS, AUTO_SHOW_ANSWER, SHOW_PAUSE_INDICATOR
+    global AUTO_GRADE_EASE, AUTO_GRADE_GRACE
+
+    config = mw.addonManager.getConfig(__name__) or {}
+    try:
+        MAX_SECONDS = max(1, int(config.get("timer_duration_seconds", 30)))
+    except (TypeError, ValueError):
+        MAX_SECONDS = 30
+
+    AUTO_SHOW_ANSWER = bool(config.get("auto_show_answer", True))
+    SHOW_PAUSE_INDICATOR = bool(config.get("show_pause_indicator", True))
+
+    raw_ease = config.get("auto_grade_ease")
+    try:
+        parsed_ease = int(raw_ease) if raw_ease is not None else 0
+        AUTO_GRADE_EASE = parsed_ease if parsed_ease in (1, 2, 3, 4) else None
+    except (TypeError, ValueError):
+        AUTO_GRADE_EASE = None
+
+    try:
+        AUTO_GRADE_GRACE = max(0, int(config.get("auto_grade_grace_seconds", 30)))
+    except (TypeError, ValueError):
+        AUTO_GRADE_GRACE = 30
+
+
+_load_config()
+
 
 # Progress bar is rendered as a unicode block string. Width is in characters,
 # not pixels — keep it short to fit inside the timer card.
@@ -50,7 +77,7 @@ def _state_for_seconds(secs: int) -> str:
     remaining = MAX_SECONDS - secs
     if remaining <= 0:
         return "expired"
-    ratio = remaining / MAX_SECONDS
+    ratio = remaining / MAX_SECONDS if MAX_SECONDS > 0 else 0
     if ratio > 0.5:
         return "idle"
     if ratio > 0.25:
@@ -177,6 +204,14 @@ class ClickableLabel(QLabel):
         toggle_pause()
 
 
+class ReviewerResizeFilter(QObject):
+    """Event filter to reposition the timer container when the reviewer resizes."""
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Resize:
+            _position_widget()
+        return super().eventFilter(watched, event)
+
+
 # --- behaviour --------------------------------------------------------------
 
 def toggle_pause() -> None:
@@ -225,6 +260,9 @@ def _handle_timeout() -> None:
 
     if AUTO_GRADE_EASE and AUTO_GRADE_EASE in (1, 2, 3, 4) \
             and answer_already_visible:
+        # Cancel any previous grader before scheduling a new one
+        _cancel_pending_auto_grade()
+
         grace_ms = AUTO_GRADE_GRACE * 1000
         grader = QTimer(mw)
         grader.setSingleShot(True)
@@ -242,12 +280,17 @@ def _do_auto_grade(ease: int, grader: "QTimer") -> None:
                 and mw.reviewer.state == "answer":
             mw.reviewer._answerCard(ease)
     finally:
-        grader.deleteLater()
+        try:
+            grader.deleteLater()
+        except Exception:
+            pass
+        if getattr(mw.reviewer, "_reviewTimerAutoGrader", None) is grader:
+            mw.reviewer._reviewTimerAutoGrader = None
 
 
 def _build_widgets() -> None:
     """Lazily construct the timer widget tree on first use."""
-    global timer_container, timer_label, progress_label
+    global timer_container, timer_label, progress_label, _resize_filter
 
     timer_container = QFrame(mw)
     timer_container.setObjectName("reviewTimerContainer")
@@ -273,13 +316,26 @@ def _build_widgets() -> None:
     # Forward clicks on the frame to toggle_pause
     timer_container.mousePressEvent = lambda _e: toggle_pause()
 
+    # Install resize filter on reviewer web view / window
+    parent = _get_parent_widget()
+    if parent and _resize_filter is None:
+        _resize_filter = ReviewerResizeFilter(parent)
+        parent.installEventFilter(_resize_filter)
+
+
+def _get_parent_widget():
+    """Get the target parent widget for timer placement."""
+    if mw.reviewer and hasattr(mw.reviewer, "web") and mw.reviewer.web:
+        return mw.reviewer.web
+    return mw
+
 
 def _position_widget() -> None:
     """Place the container in the top-right corner of the reviewer."""
     if timer_container is None:
         return
     timer_container.adjustSize()
-    parent = mw.reviewer.web if mw.reviewer and hasattr(mw.reviewer, "web") else mw
+    parent = _get_parent_widget()
     x = parent.width() - timer_container.width() - 16
     y = 12
     timer_container.move(x, y)
@@ -289,6 +345,9 @@ def _position_widget() -> None:
 
 def on_show_question(card) -> None:
     global seconds_elapsed, timer_obj, paused
+
+    # Clean up any leftover auto-grader from the previous card
+    _cancel_pending_auto_grade()
 
     seconds_elapsed = 0
     paused = False
@@ -319,7 +378,7 @@ def on_show_answer(card) -> None:
 
 
 def _cancel_pending_auto_grade() -> None:
-    """Cancel a scheduled auto-grade (called when the user grades manually)."""
+    """Cancel a scheduled auto-grade (called when the user grades manually or reviews ends)."""
     grader = getattr(mw.reviewer, "_reviewTimerAutoGrader", None)
     if grader is not None:
         try:
@@ -352,9 +411,17 @@ def on_reviewer_did_answer(reviewer, card, ease) -> None:
     _cancel_pending_auto_grade()
 
 
+def on_addon_config_did_change(module: str, conf: dict) -> None:
+    """Hot-reload configuration when modified in the Anki add-on manager."""
+    if module == __name__:
+        _load_config()
+        if timer_container and timer_container.isVisible():
+            style_label(seconds_elapsed)
+
+
 gui_hooks.reviewer_did_show_question.append(on_show_question)
 gui_hooks.reviewer_did_show_answer.append(on_show_answer)
 gui_hooks.reviewer_will_end.append(on_reviewer_end)
 gui_hooks.theme_did_change.append(on_theme_change)
 gui_hooks.reviewer_did_answer_card.append(on_reviewer_did_answer)
-
+gui_hooks.addon_config_did_change.append(on_addon_config_did_change)
