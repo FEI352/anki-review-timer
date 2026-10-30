@@ -11,10 +11,11 @@ Click the timer to pause/resume.
 
 ## What's New & Changed
 
-### 1. Functional Enhancements (Auto-Grade & Continuous Timing)
-- **Auto-Grade on Timeout**: Automatically grades cards when the countdown expires (default: `Good` / pass), allowing frictionless, hands-free pacing without having to click Again/Good manually.
-- **Grace Period**: Configurable grace window between answer revelation and the auto-grade firing (default: `30s`), giving you ample time to inspect the answer before the card advances.
-- **Continuous Countdown**: The timer keeps running seamlessly from question through answer until either the card is auto-graded or you manually score it (manual grading instantly cancels the pending auto-grader).
+### 1. Independent Two-Phase Timing (Question Phase + Answer Phase)
+- **正面阶段（Question Phase）**：卡片正面出现时，从 `timer_duration_seconds`（默认 30s）开始独立倒数。倒计时归零时自动翻开背面（若启用 `auto_show_answer`）。
+- **背面阶段（Answer Phase）**：无论是用户主动按空格翻面，还是正面超时自动翻面，**只要翻到背面，计时器立刻重新开始一个全新的阅读时段**，从 `auto_grade_grace_seconds`（默认 30s）开始重新满格倒数！
+- **自动过卡（Auto-Grade on Timeout）**：背面时段倒数归零时，自动执行评分（默认 `Good` / 3）。在此期间随时手动按评价键打分或点击暂停。
+- **阶段隔离，互不混淆**：彻底解耦“正面思考时间”与“背面核对时间”，保证每张卡在翻开后都拥有充裕且完整的独立阅读时段。
 
 ### 2. Visual Redesign
 | | Original | This fork |

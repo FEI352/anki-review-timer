@@ -9,7 +9,7 @@ from aqt import mw, gui_hooks
 from aqt.qt import QTimer, QLabel, Qt, QFont, QVBoxLayout, QFrame, QObject, QEvent
 from aqt import theme, colors
 
-__version__ = "1.2.2"
+__version__ = "1.3.0"
 
 timer_container = None
 timer_label = None
@@ -19,9 +19,8 @@ seconds_elapsed = 0
 paused = False
 _resize_filter = None
 
-# Grace period countdown state
-grace_seconds_elapsed = 0
-is_in_grace = False
+# Current phase: "question" (front) or "answer" (back)
+current_phase = "question"
 
 # Config variables (loaded via _load_config)
 MAX_SECONDS = 30
@@ -76,27 +75,25 @@ def _tm():
     return theme.theme_manager
 
 
-def _effective_total_seconds() -> int:
-    """Total seconds for the currently active countdown phase."""
-    if is_in_grace:
+def _phase_total_seconds() -> int:
+    """Total duration in seconds for the current phase."""
+    if current_phase == "answer":
         return AUTO_GRADE_GRACE
     return MAX_SECONDS
 
 
-def _effective_elapsed_seconds() -> int:
-    """Elapsed seconds for the currently active countdown phase."""
-    if is_in_grace:
-        return grace_seconds_elapsed
-    return seconds_elapsed
+def _phase_remaining_seconds() -> int:
+    """Remaining seconds for the current phase."""
+    total = _phase_total_seconds()
+    return max(0, total - seconds_elapsed)
 
 
-def _state_for_seconds() -> str:
+def _state_for_phase() -> str:
     """Return one of: 'idle', 'mid', 'urgent', 'expired', 'paused'."""
     if paused:
         return "paused"
-    total = _effective_total_seconds()
-    elapsed = _effective_elapsed_seconds()
-    remaining = total - elapsed
+    total = _phase_total_seconds()
+    remaining = _phase_remaining_seconds()
     if remaining <= 0:
         return "expired"
     ratio = remaining / total if total > 0 else 0
@@ -107,9 +104,9 @@ def _state_for_seconds() -> str:
     return "urgent"
 
 
-def _fg_for_seconds() -> str:
+def _fg_for_phase() -> str:
     """Foreground color (text) for the current state, theme-aware."""
-    state = _state_for_seconds()
+    state = _state_for_phase()
     if state == "paused":
         return _tm().var(colors.FG_DISABLED)
     if state == "expired":
@@ -123,7 +120,7 @@ def _fg_for_seconds() -> str:
 
 def _track_color() -> str:
     """Color of the empty (track) part of the progress bar."""
-    state = _state_for_seconds()
+    state = _state_for_phase()
     if state in ("paused", "expired"):
         return _tm().var(colors.BORDER_SUBTLE)
     if state == "idle":
@@ -135,7 +132,7 @@ def _track_color() -> str:
 
 def _fill_color() -> str:
     """Color of the filled part of the progress bar."""
-    state = _state_for_seconds()
+    state = _state_for_phase()
     if state in ("paused", "expired"):
         return _tm().var(colors.FG_FAINT)
     if state == "idle":
@@ -145,15 +142,13 @@ def _fill_color() -> str:
     return _tm().var(colors.ACCENT_DANGER)
 
 
-def _font_size_for_seconds() -> int:
+def _font_size_for_phase() -> int:
     """Bump font size in urgent state for added visual emphasis."""
-    return 16 if _state_for_seconds() == "urgent" else 15
+    return 16 if _state_for_phase() == "urgent" else 15
 
 
 def format_time() -> str:
-    total = _effective_total_seconds()
-    elapsed = _effective_elapsed_seconds()
-    remaining = max(0, total - elapsed)
+    remaining = _phase_remaining_seconds()
     m, s = divmod(remaining, 60)
     return f"{m}:{s:02d}"
 
@@ -165,9 +160,9 @@ def _apply_stylesheet() -> None:
     if timer_container is None:
         return
     tm = _tm()
-    text_color = _fg_for_seconds()
+    text_color = _fg_for_phase()
     track_color = _track_color()
-    font_size = _font_size_for_seconds()
+    font_size = _font_size_for_phase()
 
     timer_container.setStyleSheet(
         f"""
@@ -200,16 +195,15 @@ def _apply_stylesheet() -> None:
 
 
 def style_label() -> None:
-    """Update text, color and progress to match current state."""
+    """Update text, color and progress to match current phase and state."""
     if timer_label is None or progress_label is None:
         return
     prefix = "⏸  " if paused and SHOW_PAUSE_INDICATOR else ""
     timer_label.setText(prefix + format_time())
 
     # Two-tone progress bar via inline HTML spans (theme-aware).
-    total = _effective_total_seconds()
-    elapsed = _effective_elapsed_seconds()
-    remaining = max(0, total - elapsed)
+    total = _phase_total_seconds()
+    remaining = _phase_remaining_seconds()
     ratio = remaining / total if total > 0 else 0
     filled_n = round(PROGRESS_BAR_WIDTH * ratio)
     fill_color = _fill_color()
@@ -240,9 +234,7 @@ class ReviewerResizeFilter(QObject):
 
 def toggle_pause() -> None:
     global paused
-    total = _effective_total_seconds()
-    elapsed = _effective_elapsed_seconds()
-    if elapsed >= total:
+    if _phase_remaining_seconds() <= 0:
         return
     paused = not paused
     if paused:
@@ -253,66 +245,66 @@ def toggle_pause() -> None:
 
 
 def update_timer() -> None:
-    global seconds_elapsed, grace_seconds_elapsed
-    if is_in_grace:
-        grace_seconds_elapsed += 1
-        if timer_container:
-            style_label()
-        if grace_seconds_elapsed >= AUTO_GRADE_GRACE:
-            timer_obj.stop()
-            _do_auto_grade(AUTO_GRADE_EASE)
-    else:
-        seconds_elapsed += 1
-        if timer_container:
-            style_label()
-        if seconds_elapsed >= MAX_SECONDS:
-            _handle_timeout()
+    global seconds_elapsed
+    seconds_elapsed += 1
+    if timer_container:
+        style_label()
+
+    total = _phase_total_seconds()
+    if seconds_elapsed >= total:
+        if current_phase == "question":
+            _on_question_timeout()
+        elif current_phase == "answer":
+            _on_answer_timeout()
 
 
-def _handle_timeout() -> None:
-    """Called when the front countdown reaches zero.
-
-    Two cases:
-      1) Front of card still showing  → reveal the answer, then start
-         grace period countdown until auto-grade.
-      2) Answer already showing (user pressed space before timeout)
-         → transition directly to grace countdown.
-    """
+def _on_question_timeout() -> None:
+    """Triggered when the question phase countdown hits 0."""
     if not (mw.reviewer and mw.state == "review"):
         return
 
-    answer_already_visible = mw.reviewer.state == "answer"
-
-    if not answer_already_visible and AUTO_SHOW_ANSWER:
+    # Automatically reveal the answer if configured
+    if AUTO_SHOW_ANSWER and mw.reviewer.state != "answer":
         mw.reviewer._showAnswer()
-        answer_already_visible = mw.reviewer.state == "answer"
-
-    if AUTO_GRADE_EASE and AUTO_GRADE_EASE in (1, 2, 3, 4) \
-            and answer_already_visible:
-        _start_grace_countdown()
+        # Note: mw.reviewer._showAnswer() will synchronously trigger
+        # the hook reviewer_did_show_answer -> on_show_answer,
+        # which cleanly initiates the answer phase!
     else:
-        timer_obj.stop()
+        # If auto-show-answer is disabled or answer is already shown,
+        # transition to answer phase directly if auto-grade is configured.
+        if AUTO_GRADE_EASE and AUTO_GRADE_EASE in (1, 2, 3, 4):
+            _start_answer_phase()
+        else:
+            timer_obj.stop()
 
 
-def _start_grace_countdown() -> None:
-    """Start the grace countdown on the answer side."""
-    global is_in_grace, grace_seconds_elapsed
+def _on_answer_timeout() -> None:
+    """Triggered when the answer phase countdown hits 0."""
+    timer_obj.stop()
+    if AUTO_GRADE_EASE and AUTO_GRADE_EASE in (1, 2, 3, 4):
+        _do_auto_grade(AUTO_GRADE_EASE)
+
+
+def _start_answer_phase() -> None:
+    """Cleanly enter the answer phase with its own full grace duration."""
+    global current_phase, seconds_elapsed, paused
+    current_phase = "answer"
+    seconds_elapsed = 0
+    paused = False
+
     if AUTO_GRADE_GRACE <= 0:
         timer_obj.stop()
-        _do_auto_grade(AUTO_GRADE_EASE)
+        if AUTO_GRADE_EASE and AUTO_GRADE_EASE in (1, 2, 3, 4):
+            _do_auto_grade(AUTO_GRADE_EASE)
         return
 
-    is_in_grace = True
-    grace_seconds_elapsed = 0
     style_label()
     if timer_obj:
         timer_obj.start(1000)
 
 
 def _do_auto_grade(ease: int) -> None:
-    """Fire the auto-grade if the card is still waiting on one."""
-    global is_in_grace
-    is_in_grace = False
+    """Fire the auto-grade if still in reviewer answer state."""
     try:
         if mw.reviewer and mw.state == "review" \
                 and mw.reviewer.state == "answer":
@@ -377,11 +369,11 @@ def _position_widget() -> None:
 
 
 def on_show_question(card) -> None:
-    global seconds_elapsed, grace_seconds_elapsed, is_in_grace, timer_obj, paused
+    """Hook: card front is shown."""
+    global current_phase, seconds_elapsed, paused, timer_obj
 
+    current_phase = "question"
     seconds_elapsed = 0
-    grace_seconds_elapsed = 0
-    is_in_grace = False
     paused = False
 
     if timer_container is None:
@@ -397,14 +389,13 @@ def on_show_question(card) -> None:
 
 
 def on_show_answer(card) -> None:
-    # If the user pressed space or flipped to answer manually while countdown is running,
-    # the main timer keeps ticking until MAX_SECONDS. If it already expired, grace was started.
-    pass
+    """Hook: card back (answer) is shown, whether manually (space) or via auto-show-answer."""
+    # When the answer appears, start the independent answer-phase grace countdown!
+    _start_answer_phase()
 
 
 def on_reviewer_end() -> None:
-    global is_in_grace
-    is_in_grace = False
+    """Hook: reviewer exits (deck finished or user exited)."""
     if timer_obj:
         timer_obj.stop()
     if timer_container:
@@ -412,21 +403,19 @@ def on_reviewer_end() -> None:
 
 
 def on_theme_change() -> None:
-    """Re-apply stylesheet when Anki's day/night theme changes."""
+    """Hook: Anki day/night theme changed."""
     if timer_container and timer_container.isVisible():
         style_label()
 
 
 def on_reviewer_did_answer(reviewer, card, ease) -> None:
-    """Cancel countdown when the user grades manually."""
-    global is_in_grace
-    is_in_grace = False
+    """Hook: user answered/graded the card manually."""
     if timer_obj:
         timer_obj.stop()
 
 
 def on_addon_config_did_change(module: str, conf: dict) -> None:
-    """Hot-reload configuration when modified in the Anki add-on manager."""
+    """Hook: add-on config changed."""
     if module == __name__:
         _load_config()
         if timer_container and timer_container.isVisible():
@@ -447,4 +436,3 @@ elif hasattr(mw.addonManager, "addon_config_did_change"):
         mw.addonManager.addon_config_did_change.append(on_addon_config_did_change)
     except Exception:
         pass
-
