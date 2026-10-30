@@ -9,7 +9,7 @@ from aqt import mw, gui_hooks
 from aqt.qt import QTimer, QLabel, Qt, QFont, QVBoxLayout, QFrame, QObject, QEvent
 from aqt import theme, colors
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 timer_container = None
 timer_label = None
