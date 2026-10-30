@@ -9,7 +9,7 @@ from aqt import mw, gui_hooks
 from aqt.qt import QTimer, QLabel, Qt, QFont, QVBoxLayout, QFrame, QObject, QEvent
 from aqt import theme, colors
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 timer_container = None
 timer_label = None
@@ -26,7 +26,7 @@ current_phase = "question"
 MAX_SECONDS = 30
 AUTO_SHOW_ANSWER = True
 SHOW_PAUSE_INDICATOR = True
-AUTO_GRADE_EASE = 3
+AUTO_GRADE_EASE = 1
 AUTO_GRADE_GRACE = 30
 
 
@@ -46,10 +46,10 @@ def _load_config() -> None:
 
     raw_ease = config.get("auto_grade_ease")
     try:
-        parsed_ease = int(raw_ease) if raw_ease is not None else 0
+        parsed_ease = int(raw_ease) if raw_ease is not None else 1
         AUTO_GRADE_EASE = parsed_ease if parsed_ease in (1, 2, 3, 4) else None
     except (TypeError, ValueError):
-        AUTO_GRADE_EASE = None
+        AUTO_GRADE_EASE = 1
 
     try:
         AUTO_GRADE_GRACE = max(0, int(config.get("auto_grade_grace_seconds", 30)))

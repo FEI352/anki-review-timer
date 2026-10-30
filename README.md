@@ -14,7 +14,7 @@ Click the timer to pause/resume.
 ### 1. Independent Two-Phase Timing (Question Phase + Answer Phase)
 - **正面阶段（Question Phase）**：卡片正面出现时，从 `timer_duration_seconds`（默认 30s）开始独立倒数。倒计时归零时自动翻开背面（若启用 `auto_show_answer`）。
 - **背面阶段（Answer Phase）**：无论是用户主动按空格翻面，还是正面超时自动翻面，**只要翻到背面，计时器立刻重新开始一个全新的阅读时段**，从 `auto_grade_grace_seconds`（默认 30s）开始重新满格倒数！
-- **自动过卡（Auto-Grade on Timeout）**：背面时段倒数归零时，自动执行评分（默认 `Good` / 3）。在此期间随时手动按评价键打分或点击暂停。
+- **自动过卡（Auto-Grade on Timeout）**：背面时段倒数归零时，自动执行评分（默认 `Again` / 1，即 fail）。在此期间随时手动按评价键打分或点击暂停。
 - **阶段隔离，互不混淆**：彻底解耦“正面思考时间”与“背面核对时间”，保证每张卡在翻开后都拥有充裕且完整的独立阅读时段。
 
 ### 2. Visual Redesign
@@ -66,7 +66,7 @@ See [`config.md`](config.md) for full parameter details. The default settings in
     "timer_duration_seconds": 30,
     "auto_show_answer": true,
     "show_pause_indicator": true,
-    "auto_grade_ease": 3,
+    "auto_grade_ease": 1,
     "auto_grade_grace_seconds": 30
 }
 ```
@@ -74,7 +74,7 @@ See [`config.md`](config.md) for full parameter details. The default settings in
 - **`timer_duration_seconds`** (default `30`): Countdown duration in seconds before the timer triggers timeout actions.
 - **`auto_show_answer`** (default `true`): Automatically reveals the answer when the countdown expires. (Forced on when `auto_grade_ease` is configured).
 - **`show_pause_indicator`** (default `true`): Displays the `⏸` icon prefix when the timer is paused.
-- **`auto_grade_ease`** (default `3`): Grade applied upon expiration. `0` = off (only reveals answer), `1` = Again (fail), `2` = Hard, `3` = Good (pass), `4` = Easy.
+- **`auto_grade_ease`** (default `1`): Grade applied upon expiration. `0` = off (only reveals answer), `1` = Again (fail, default), `2` = Hard, `3` = Good (pass), `4` = Easy.
 - **`auto_grade_grace_seconds`** (default `30`): Reading grace period (in seconds) between answer revelation and the automatic rating firing.
 
 ## Credits
