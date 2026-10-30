@@ -9,7 +9,7 @@ from aqt import mw, gui_hooks
 from aqt.qt import QTimer, QLabel, Qt, QFont, QVBoxLayout, QFrame, QObject, QEvent
 from aqt import theme, colors
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 timer_container = None
 timer_label = None
@@ -293,7 +293,8 @@ class ReviewerResizeFilter(QObject):
     """Event filter to reposition the timer container when the reviewer resizes."""
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.Resize:
-            _position_widget()
+            if mw.state == "review":
+                _position_widget()
         return super().eventFilter(watched, event)
 
 
@@ -312,6 +313,10 @@ def toggle_pause() -> None:
 
 
 def update_timer() -> None:
+    if mw.state != "review":
+        _hide_timer()
+        return
+
     global seconds_elapsed
     seconds_elapsed += 1
     if timer_container:
@@ -421,6 +426,9 @@ def _position_widget() -> None:
     """Place the container in the top-right corner of the reviewer."""
     if timer_container is None:
         return
+    if mw.state != "review":
+        timer_container.hide()
+        return
     timer_container.adjustSize()
     parent = _get_parent_widget()
     x = parent.width() - timer_container.width() - 16
@@ -502,6 +510,8 @@ gui_hooks.reviewer_will_end.append(on_reviewer_end)
 gui_hooks.state_did_change.append(on_state_did_change)
 gui_hooks.theme_did_change.append(on_theme_change)
 gui_hooks.reviewer_did_answer_card.append(on_reviewer_did_answer)
+gui_hooks.deck_browser_did_render.append(lambda _db: _hide_timer())
+gui_hooks.overview_did_refresh.append(lambda _ov: _hide_timer())
 
 # Register addon_config_did_change only if supported by the running Anki version
 if hasattr(gui_hooks, "addon_config_did_change"):
